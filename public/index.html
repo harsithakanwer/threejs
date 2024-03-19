@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <title>three.js webgl - interactive - voxel painter</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
+</head>
+
+<style>
+    body {
+        margin: 0;
+    }
+
+    #my_canvas {
+        margin: 0;
+        position: absolute;
+        height: 100vh;
+        width: 100%;
+    }
+
+    .box {
+        position: absolute;
+        z-index: 99;
+    }
+
+    #cubeButton {
+        margin-top: 10px;
+        padding: 5px;
+        margin-right: 0;
+        margin-left: 7px;
+        background: transparent;
+        color: #fff;
+        border: solid #fff 1px;
+        cursor: pointer;
+    }
+
+    #sphereButton {
+        margin-top: 10px;
+        padding: 5px;
+        margin-right: 0;
+        margin-left: 7px;
+        background: transparent;
+        color: #fff;
+        border: solid #fff 1px;
+        cursor: pointer;
+    }
+</style>
+
+<body>
+    <div class="box">
+        <button class="object" id="cubeButton">Cube</button>
+        <br>
+        <button class="object" id="sphereButton">Sphere</button>
+        <br>
+
+    </div>
+    <canvas id="my_canvas"></canvas>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.module.js",
+                "three/addons/": "./jsm/"
+            }
+        }
+   </script>
+
+    <script type="module">
+
+        import * as THREE from 'three';
+        import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+        import { TransformControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/TransformControls.js';
+
+        let camera, scene, renderer;
+        let plane;
+        let controls;
+        let raycaster;
+        let transformControls;
+        var a = null;
+        var b = null;
+        let Data;
+        let selectedObjectIds = [];
+        let change = [];
+        let Group = new THREE.Group();
+        let realLines = [];
+        let onDownPosition = new THREE.Vector2();
+        let onUpPosition = new THREE.Vector2();
+
+        init();
+        render();
+
+        function init() {
+
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 10000);
+            camera.position.set(500, 800, 1300);
+            camera.lookAt(0, 0, 0);
+
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x000000);
+
+
+            const geometry = new THREE.PlaneGeometry(1000, 1000);
+            geometry.rotateX(-Math.PI / 2);
+
+            const material = new THREE.MeshBasicMaterial({ color: 0xCCCCCC, side: THREE.DoubleSide });
+            plane = new THREE.Mesh(geometry, material);
+            scene.add(plane);
+
+
+            const ambientLight = new THREE.AmbientLight(0x606060, 3);
+            scene.add(ambientLight);
+
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 3);
+            directionalLight.position.set(1, 0.75, 0.5).normalize();
+            scene.add(directionalLight);
+
+
+            renderer = new THREE.WebGLRenderer({ canvas: my_canvas });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            transformControls = new TransformControls(camera, renderer.domElement);
+
+            transformControls.addEventListener("dragging-changed", function (event) {
+
+                controls.enabled = !event.value;
+
+                updateObjectPosition(transformControls.object.position, transformControls.object.uuid);
+
+            });
+
+            scene.add(transformControls);
+            transformControls.showY = false
+
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.minDistance = 300;
+            controls.maxDistance = 1500;
+            controls.addEventListener('change', render);
+
+            raycaster = new THREE.Raycaster();
+
+            window.addEventListener('resize', onWindowResize);
+            window.addEventListener('dblclick', uploadobject);
+            window.addEventListener('click', onClick);
+
+            function onClick(event) {
+                const mouse = new THREE.Vector2();
+                mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+                mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+                raycaster.setFromCamera(mouse, camera);
+
+                const intersects = raycaster.intersectObjects(objects, true);
+
+                if (intersects.length === 0) {
+                    Group.children = [];
+                    realLines = []
+                    // transformControls.detach();
+                    scene.remove(Group);
+                }
+            }
+
+        }
+        function InitialUpdate() {
+
+            fetch('/initial-data')
+                .then(response => response.json())
+                .then(data => {
+                    if (data && data.Objects) {
+                        data.Objects.forEach(obj => {
+                            if (obj.Line && obj.Line.type) {
+                                if (obj.Line.type === 'cube') {
+                                    createCube(obj.Line.position, obj.Line.uuid);
+                                }
+                                else if (obj.Line.type === 'sphere') {
+                                    createSphere(obj.Line.position, obj.Line.uuid);
+                                }
+                            }
+                        });
+                    }
+
+
+                    connectposition();
+
+                })
+                .catch(error => {
+                    console.error('Error fetching initial data:', error);
+                });
+        }
+
+        InitialUpdate();
+
+        document.addEventListener('mousedown', onPointerDown);
+        document.addEventListener('mouseup', onPointerUp);
+
+        function onPointerDown(event) {
+            onDownPosition.x = event.clientX;
+            onDownPosition.y = event.clientY;
+        }
+
+        function onPointerUp(event) {
+            onUpPosition.x = event.clientX;
+            onUpPosition.y = event.clientY;
+
+            if (onDownPosition.distanceTo(onUpPosition) === 0) {
+                transformControls.detach();
+                scene.remove(Group);
+                render();
+            }
+        }
+
+
+        function connectposition() {
+            fetch('/initial-data')
+                .then(response => response.json())
+                .then(data => {
+                    if (data && data.objectIds) {
+                        change.forEach(mesh => {
+                            scene.remove(mesh);
+                        });
+
+                        change = [];
+
+                        data.objectIds.forEach(objIdSet => {
+                            const pos = [];
+                            const lines = objIdSet.Lines;
+                            lines.forEach(lineUuid => {
+                                data.Objects.forEach(obj => {
+                                    if (obj.Line.uuid === lineUuid) {
+                                        const position = obj.Line.position;
+                                        pos.push(position);
+                                    }
+                                });
+                            });
+                            let id = objIdSet.id;
+                            connection(pos, id);
+                        });
+                        // console.log(change);
+                    }
+                })
+                .catch(error => {
+
+                });
+        }
+
+
+        function createCube(position, uuid) {
+            const { x, y, z } = position;
+            const cubeuuid = uuid;
+            const geometry = new THREE.BoxGeometry(10, 10, 10);
+            const material = new THREE.MeshPhongMaterial({ color: 0x0000ff });
+            const cube = new THREE.Mesh(geometry, material);
+            cube.position.set(x, 5, z);
+            // console.log(cube);
+            cube.uuid = cubeuuid;
+            cube.name = "cube";
+            // console.log(cubeuuid);
+            scene.add(cube);
+            objects.push(cube);
+            render();
+        }
+
+        function createSphere(position, uuid) {
+
+            const { x, y, z } = position;
+            const sphereuuid = uuid;
+            const geometry = new THREE.SphereGeometry(10, 10, 10);
+            const material = new THREE.MeshPhongMaterial({ color: 0x008000 });
+            const sphere = new THREE.Mesh(geometry, material);
+            sphere.position.set(x, 10, z);
+            // console.log(sphere.position);
+            sphere.uuid = sphereuuid;
+            sphere.name = "sphere";
+            // console.log(sphere.uuid);
+            scene.add(sphere);
+            objects.push(sphere);
+
+            render();
+        }
+
+        function onWindowResize() {
+
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            render();
+
+        }
+
+
+        $(".object").click(function () {
+            if (($(this).attr("id")) === "cubeButton") {
+                a = "cube";
+            }
+            if (($(this).attr("id")) === "sphereButton") {
+                a = "sphere";
+            }
+
+        });
+
+        let objects = [];
+        let pointers = [];
+
+        function uploadobject(event) {
+            const mouse = new THREE.Vector2();
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+
+            const intersects = raycaster.intersectObjects(objects, true);
+
+
+            if (intersects[0]) {
+                if (intersects[0].object.name === "line") {
+                    const lineid = intersects[0].object.uuid;
+                    // console.log(lineUniqid);
+                    // console.log(scene.children);
+                }
+            }
+
+            if (intersects.length > 0 && intersects[0].object.name !== 'line') {
+                const intersectedObject = intersects[0].object;
+                // console.log(objects);
+                const intersectuuid = intersectedObject.uuid
+                // console.log(intersectuuid);
+
+                transformControls.attach(intersectedObject);
+                realtimerender(intersectuuid);
+
+
+
+            } else {
+                if (a === "cube") {
+                    const mouse = new THREE.Vector2();
+                    mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+                    mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+                    raycaster.setFromCamera(mouse, camera);
+
+                    const intersects = raycaster.intersectObject(plane, true);
+
+                    if (intersects.length > 0) {
+                        const clickedPoint = intersects[0].point;
+                        const geometry = new THREE.BoxGeometry(10, 10, 10);
+                        const material = new THREE.MeshPhongMaterial({ color: 0x0000ff });
+                        const cube = new THREE.Mesh(geometry, material);
+                        cube.position.set(clickedPoint.x, 5, clickedPoint.z);
+                        cube.name = "cube"
+                        scene.add(cube);
+
+                        const ClickedPosition = clickedPoint;
+
+                        const ClickedUuid = cube.uuid;
+
+                        const { x, y, z } = ClickedPosition;
+                        const id = ClickedUuid;
+
+                        const newData = {
+                            position:
+                            {
+                                x: x,
+                                y: 5,
+                                z: z,
+                            }
+                            ,
+                            uuid: id,
+                            type: "cube"
+                        };
+
+                        updateobjects(newData);
+
+                        objects.push(cube);
+                        render();
+
+                    }
+                }
+
+                else if (a === "sphere") {
+                    const mouse = new THREE.Vector2();
+                    mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+                    mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+                    raycaster.setFromCamera(mouse, camera);
+
+                    const intersects = raycaster.intersectObjects(objects, true);
+
+                    if (intersects.length > 0 && intersects[0].object.name === 'line') {
+                        const intersectedLine = intersects[0].object;
+                        const lineid = intersectedLine.uuid;
+                        // console.log(lineid);
+                        const intersectsPlane = raycaster.intersectObject(plane, true);
+
+                        if (intersectsPlane.length > 0) {
+                            const clickedPoint = intersectsPlane[0].point;
+                            const geometry = new THREE.SphereGeometry(10, 10, 10);
+                            const material = new THREE.MeshPhongMaterial({ color: 0x008000 });
+                            const sphere = new THREE.Mesh(geometry, material);
+                            sphere.position.set(clickedPoint.x, 10, clickedPoint.z);
+                            scene.add(sphere);
+                            const ClickedPosition = clickedPoint;
+
+                            const ClickedUuid = sphere.uuid;
+
+
+                            const { x, y, z } = ClickedPosition;
+                            const id = ClickedUuid;
+                            // console.log(id);
+
+                            const newData = {
+                                position: {
+                                    x: x,
+                                    y: 10,
+                                    z: z,
+                                },
+                                uuid: id,
+                                type: "sphere"
+                            };
+
+                            updateobjects(newData);
+                            // pointers.push(newData.position)
+                            objects.push(sphere);
+                            render();
+
+                            setTimeout(function () {
+                                scene.children.forEach(child => {
+                                    if (child.uuid === lineid) {
+                                        const newmesh = child.points;
+                                        // console.log(newmesh);
+                                        lineupdation(lineid, newData, newmesh)
+                                    }
+                                });
+                            }, 1000);
+
+                        }
+
+                    }
+
+
+                }
+
+                else {
+                    const mouse = new THREE.Vector2();
+                    mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+                    mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+                    raycaster.setFromCamera(mouse, camera);
+
+                    const intersects = raycaster.intersectObject(plane, true);
+
+                    if (intersects.length > 0) {
+                        const clickedPoint = intersects[0].point;
+                        const newData = {
+                            x: clickedPoint.x,
+                            y: 5,
+                            z: clickedPoint.z,
+                        };
+                        // console.log(newData);
+                        // pointers.push(newData);
+
+                        render();
+                    }
+
+                }
+
+
+            }
+        }
+
+        window.addEventListener('contextmenu', function (event) {
+            event.preventDefault();
+            if (event.shiftKey) {
+                const mouse = new THREE.Vector2();
+                mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+                mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+                raycaster.setFromCamera(mouse, camera);
+
+                const intersects = raycaster.intersectObjects(objects, true);
+
+                if (intersects.length > 0) {
+                    const intersectedObject = intersects[0].object;
+
+                    selectedObjectIds.push(intersectedObject.uuid);
+                    // console.log(intersectedObject.uuid);
+                    if (selectedObjectIds.length >= 2) {
+
+                        connectlines();
+                    }
+                }
+            }
+            else {
+                const mouse = new THREE.Vector2();
+                mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+                mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+                raycaster.setFromCamera(mouse, camera);
+
+                const intersects = raycaster.intersectObjects(objects, true);
+                // console.log(objects);
+
+                if (intersects.length > 0) {
+                    const intersectedObject = intersects[0].object;
+
+                    deleteObject(intersectedObject.uuid);
+                }
+            }
+        });
+
+        // console.log(pointers);
+
+
+        function realtimerender(intersectuuid) {
+            fetch('/realtime-rendering', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ UUID: intersectuuid }),
+            })
+                .then(response => response.json())
+                .then(data => {
+                    Group.children = [];
+                    realLines = [];
+                    // console.log(data.positions);
+                    data.positions.forEach(element => {
+                        const positions = element;
+                        let points = [];
+                        positions.forEach(element => {
+                            points.push(new THREE.Vector3(element.x, element.y, element.z));
+                        })
+                        console.log(points);
+                        console.log(points[0]);
+                        // console.log(points[1]);
+                        // console.log(points[2]);
+                        realLines.push = points;
+                        realLines.forEach(line => {
+                            let curve = new THREE.CatmullRomCurve3(line);
+                            // console.log(curve.points);
+                            const tubeGeometry = new THREE.TubeGeometry(curve, 200, 2.5, 10, false);
+                            const tubeMaterial = new THREE.MeshStandardMaterial({ color: 0x00ff00 });
+                            realtimetube = new THREE.Mesh(tubeGeometry, tubeMaterial);
+                            // console.log(realtimetube);
+                            Group.add(realtimetube);
+                            console.log(group);
+                        })
+                        // console.log(group);
+                        // console.log(scene.children);
+                        scene.add(Group);
+                    })
+                    scene.add(Group);
+                    render();
+                })
+                .catch(error => {
+                    console.error('Error fetching curve data:', error);
+                });
+        }
+
+
+        function lineupdation(lineid, newData, newmesh) {
+            fetch('/include-sphere', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ IDs: lineid, sphere: newData, points: newmesh }),
+            })
+                .then(response => response.json())
+                .then(data => {
+                    connectposition()
+                })
+
+        }
+
+
+
+        function deleteObject(ObjectUuid) {
+
+            fetch('/delete-object', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ uuid: ObjectUuid }),
+            })
+                .then(response => response.json())
+                .then(data => {
+                    const objectToDelete = scene.getObjectByProperty('uuid', ObjectUuid);
+                    if (objectToDelete) {
+                        scene.remove(objectToDelete);
+                        objects = objects.filter(obj => obj.uuid !== ObjectUuid);
+
+                    }
+                    connectposition();
+                    // console.log(scene);
+                })
+                .catch(error => {
+
+                });
+
+            render();
+
+        }
+
+
+
+        function connectObjects(objectIds, lineid) {
+
+            fetch('/connect-objects', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ IDs: objectIds, lineId: lineid }),
+            })
+                .then(response => response.json())
+                .then(data => {
+                    selectedObjectIds = [];
+                })
+                .catch(error => {
+
+                });
+            render();
+        }
+
+
+        function connectlines() {
+            const material = new THREE.LineBasicMaterial({ color: 0x000000 });
+            const geometry = new THREE.BufferGeometry()
+            const vertices = [];
+
+            selectedObjectIds.forEach(uuid => {
+                const object = scene.getObjectByProperty('uuid', uuid);
+
+                vertices.push(object.position.clone());
+                geometry.setFromPoints(vertices);
+            });
+
+
+            const line = new THREE.Line(geometry, material);
+            line.name = "line";
+            change.push(line);
+            scene.add(line);
+            objects.push(line);
+
+            const lineuuid = line.uuid;
+
+            if (selectedObjectIds.length >= 2) {
+                connectObjects(selectedObjectIds, lineuuid);
+
+            }
+
+        }
+
+        function connection(place, id) {
+            let points = [];
+            place.forEach(element => {
+                points.push(new THREE.Vector3(element.x, element.y, element.z));
+            })
+            // console.log(points);
+            const curve = new THREE.CatmullRomCurve3(points);
+            let curvepoints = curve.getPoints(100);
+            // console.log(curvepoints);
+            // console.log(curve);
+            const geometry = new THREE.TubeGeometry(curve);
+            const material = new THREE.MeshBasicMaterial({ color: 0x000000 });
+            const mesh = new THREE.Mesh(geometry, material);
+            mesh.uuid = id;
+            mesh.name = "line";
+            mesh.points = curvepoints;
+            // console.log(mesh.points);
+            change.push(mesh);
+            scene.add(mesh);
+
+            objects.push(mesh);
+            // console.log(scene);
+
+
+        }
+
+
+        function updateObjectPosition(Objectposition, Objectuuid) {
+
+            fetch('/update-position', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ position: Objectposition, uuid: Objectuuid }),
+            })
+                .then(response => response.json())
+                .then(data => {
+                    connectposition();
+                })
+                .catch(error => {
+
+                });
+            render();
+        }
+
+
+        function updateobjects(newData) {
+            fetch('/update-shape', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(newData),
+            })
+                .then(response => response.json())
+                .then(data => {
+
+                })
+                .catch(error => {
+
+                });
+        }
+        function render() {
+
+            requestAnimationFrame(render);
+
+            if (realLines.length >= 1 && Group.children.length >= 1) {
+                console.log(realLines);
+                realLines.forEach(line => {
+                    // console.log(realLines[0][1]);
+                    let curve = new THREE.CatmullRomCurve3(line);
+
+                    Group.children[realLines.indexOf(line)].geometry.dispose();
+                    Group.children[realLines.indexOf(line)].geometry = new THREE.TubeGeometry(curve, 100, 1, 10, false);
+                })
+            }
+            else {
+                scene.remove(Group);
+                realLines = [];
+            }
+
+            renderer.render(scene, camera);
+        }
+        render();
+
+    </script>
+
+</body>
+
+</html>
